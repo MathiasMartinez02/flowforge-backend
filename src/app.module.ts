@@ -3,10 +3,10 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import configuration, { configValidationSchema } from './config/configuration.js';
 import { HealthModule } from './health/health.module.js';
-import { AppController } from './app.controller.js';
-import { AppService } from './app.service.js';
+import { WorkflowsModule } from './workflows/workflows.module.js';
+import { RunsModule } from './runs/runs.module.js';
 
-// Módulo raíz: carga config validada, conecta TypeORM a Postgres, registra el health check.
+// Módulo raíz: carga config validada, conecta TypeORM a Postgres, registra health check + workflows + runs.
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -25,8 +25,8 @@ import { AppService } from './app.service.js';
       }),
     }),
     HealthModule,
+    WorkflowsModule,
+    RunsModule,
   ],
-  controllers: [AppController],
-  providers: [AppService],
 })
 export class AppModule {}
