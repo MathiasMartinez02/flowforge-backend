@@ -6,9 +6,11 @@ import { WorkflowEngineService } from '../engine/workflow-engine.service.js';
 export class RunsController {
   constructor(private readonly engine: WorkflowEngineService) {}
 
+  // Cambio en la Fase 2: ya no ejecuta el workflow de forma sincrona (runWorkflow), ahora encola
+  // el primer paso y devuelve el run recien creado (status 'running') — ver triggerRun.
   @Post('workflows/:id/runs')
   run(@Param('id') id: string) {
-    return this.engine.runWorkflow(id, 'manual');
+    return this.engine.triggerRun(id, 'manual');
   }
 
   @Get('workflows/:id/runs')

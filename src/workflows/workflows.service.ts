@@ -24,11 +24,12 @@ export class WorkflowsService {
       description: dto.description ?? null,
       triggerType: dto.triggerType,
       cronExpression: dto.cronExpression ?? null,
+      // actionType es opcional en el DTO desde la Fase 2 (un paso 'condition' no lo lleva) — se normaliza a null explicito.
       steps: dto.steps.map((step) =>
         this.steps.create({
           orderIndex: step.orderIndex,
           stepType: step.stepType,
-          actionType: step.actionType,
+          actionType: step.actionType ?? null,
           config: step.config,
         }),
       ),
