@@ -1,114 +1,145 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# FlowForge — Backend
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Motor de automatización tipo Zapier/n8n: workflows con un trigger (manual o programado), una cadena
+ordenada de pasos (`action` o `condition`) y ejecución real por colas con reintentos.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+API en NestJS + TypeORM + PostgreSQL, colas con BullMQ + Redis. El repo del frontend (Next.js) vive
+en [`flowforge-front`](https://github.com/MathiasMartinez02/flowforge-front); ambos se orquestan
+juntos desde un `docker-compose.yml` en la carpeta contenedora del proyecto (no versionado en
+ninguno de los dos repos).
 
-## Description
+## Qué resuelve
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+El pipeline central es lo que muestra el proyecto: cada paso de un workflow se encola como su propio
+job de BullMQ, con reintentos y backoff exponencial reales (no un `try/catch` en memoria), y el
+resultado de cada paso queda persistido en su propia fila (`step_runs`) para poder reconstruir el
+timeline completo de una ejecución.
 
-## Project setup
-
-```bash
-$ npm install
+```text
+Trigger (manual o cron)
+        │
+        ▼
+workflow-engine.service  →  crea workflow_run + primer step_run (pending)
+        │
+        ▼
+workflow.producer  →  encola un job en BullMQ: { stepRunId, previousOutput }
+        │
+        ▼
+workflow.processor (worker)
+        │
+        ├── step_type = 'condition' → condition-evaluator (==, !=, >, <, contains)
+        │      ├── true  → encola el siguiente paso
+        │      └── false → resto de los pasos 'skipped', run 'completed' (no es un fallo)
+        │
+        └── step_type = 'action' → action-registry.get(action_type)
+               ├── http_request (Axios) o notification (SMTP/nodemailer)
+               ├── 3 intentos, backoff exponencial (2s, 4s, 8s) — reintentos nativos de BullMQ
+               └── último intento agotado → step_run y workflow_run quedan 'failed'
 ```
 
-## Compile and run the project
+Cada `action` recibe como input el `output` del paso anterior, no solo el trigger original — así una
+`condition` puede evaluar el status code de un `http_request` previo, y una `notification` puede
+incluir datos de un paso anterior en el mensaje (`{{campo}}`).
+
+## Stack
+
+| Pieza | Elección | Por qué |
+|---|---|---|
+| Framework | NestJS 12 (ESM nativo) | arquitectura modular, DI de fábrica para BullMQ/TypeORM |
+| ORM | TypeORM 1.x + migraciones versionadas | sin `synchronize`, el schema se audita por commit |
+| Colas | `@nestjs/bullmq` + BullMQ + Redis (ioredis) | retry/backoff nativos, un worker genérico por `action_type` |
+| Scheduling | `@nestjs/schedule` + `SchedulerRegistry` | un `CronJob` dinámico por workflow programado, registrado/dado de baja en caliente |
+| Validación | `class-validator` + `class-transformer`, `whitelist`+`forbidNonWhitelisted` | DTOs estrictos, rechaza campos no declarados |
+| Config | `@nestjs/config` + Joi | falla rápido al bootear si falta una env var |
+| Testing | Vitest (unitarios + e2e) | reemplaza a Jest como test runner por default del scaffold actual de Nest |
+
+## Cómo levantarlo
+
+### Con Docker Compose (recomendado)
+
+Desde la carpeta contenedora del proyecto (`flowforge/`, un nivel arriba de este repo):
 
 ```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+docker compose up --build
 ```
 
-## Run tests
+Levanta Postgres, Redis, este backend (con migraciones automáticas antes de arrancar Nest, ver
+`docker-entrypoint.sh`) y el frontend. Backend en `http://localhost:3000`, `GET /health` confirma la
+conexión real a la base.
+
+### Local (sin Docker)
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+cp .env.example .env          # completar si hace falta (SMTP es opcional)
+npm ci
+npm run migration:run         # requiere Postgres real corriendo (docker compose up -d postgres redis alcanza)
+npm run start:dev
 ```
 
-## Deployment
+## Modelo de datos
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+4 tablas (sin enums nativos de Postgres a propósito — `varchar` + validación en la app, para no
+depender de `ALTER TYPE` al sumar tipos nuevos de trigger/action):
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+- **`workflows`** — nombre, `trigger_type` (`manual` | `scheduled`), `cron_expression`, `status`
+  (`draft` | `active` | `paused`).
+- **`workflow_steps`** — pasos ordenados (`order_index`), `step_type` (`action` | `condition`),
+  `action_type` (`http_request` | `notification`), `config` (jsonb específico del tipo).
+- **`workflow_runs`** — una ejecución completa: estado, `trigger_source`, timestamps, error.
+- **`step_runs`** — el resultado de cada paso dentro de un run: estado, `attempt`, `output` (jsonb,
+  lo consume el paso siguiente), error.
+
+## Endpoints
+
+| Método | Ruta | Qué hace |
+|---|---|---|
+| `POST` | `/workflows` | crea un workflow con sus pasos (transacción) |
+| `GET` | `/workflows` | lista workflows con sus pasos |
+| `GET` | `/workflows/:id` | detalle de un workflow |
+| `PATCH` | `/workflows/:id/status` | activa/pausa un workflow — resincroniza su cron en caliente |
+| `POST` | `/workflows/:id/runs` | dispara una ejecución manual (encola el primer paso, no espera a que termine) |
+| `GET` | `/workflows/:id/runs` | historial de runs de un workflow |
+| `GET` | `/runs/:id` | detalle de un run con el timeline de sus `step_runs` |
+| `GET` | `/health` | liveness + ping real a Postgres |
+
+## Scheduling (`trigger_type = 'scheduled'`)
+
+`SchedulerService` registra un `CronJob` dinámico (via `SchedulerRegistry`) por cada workflow con
+`trigger_type = 'scheduled'` y `status = 'active'`, tanto al bootear el proceso como al crear un
+workflow nuevo o cambiar su `status` (`PATCH /workflows/:id/status`) — no hace falta reiniciar el
+backend para que un cambio de scheduling tome efecto. Al dispararse, llama al mismo
+`WorkflowEngineService.triggerRun` que usa el botón "Ejecutar ahora" manual, con
+`trigger_source: 'scheduled'`.
+
+**Trade-off documentado a propósito**: sin lock distribuido. Para una sola instancia del backend
+(el caso del MVP) no hace falta — en producción con más de una instancia esto duplicaría runs; la
+solución sería un lock de Redis o los repeatable jobs de BullMQ (que deduplican por `jobId`).
+
+## Testing
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+npm run test        # unitarios (condition-evaluator, workflow-engine con BullMQ/repos mockeados, scheduler)
+npm run test:e2e     # GET /health contra Postgres real — requiere DATABASE_URL apuntando a una base real
+npm run lint
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+CI (`.github/workflows/ci.yml`) corre lint + build + unitarios + migraciones + e2e en cada push/PR,
+contra servicios reales de Postgres y Redis (no mockeados).
 
-## Observability
+## Política de reintentos
 
-In production applications, observability is essential for understanding how your system behaves, detecting issues early, and maintaining reliable performance.
+3 intentos por `action`, backoff exponencial (2s, 4s, 8s) — configurado nativo en BullMQ
+(`attempts`, `backoff: { type: 'exponential', delay: 2000 }`), no reinventado a mano. Cada intento
+fallido se apila en `step_run.output.attempts` para poder mostrar "Intento 2/3" en el frontend con
+datos reales, sin agregar una tabla nueva al modelo.
 
-[NestJS Observe](https://observe.nestjs.com) automatically instruments your NestJS application, giving you deep visibility into your system with minimal setup:
+## Cómo agregar un tipo de `action` nuevo
 
-- **Distributed tracing:** Follow requests across services and understand how they flow through your system.
-- **Waterfall analysis:** Visualize request execution and identify slow operations, bottlenecks, and unexpected delays.
-- **Performance analysis:** Analyze application performance in real time and quickly pinpoint areas that need optimization.
-- **Metrics:** Track key application and infrastructure metrics to understand system health and performance trends.
-- **Logging:** Centralize and correlate logs with traces and other telemetry to make debugging easier.
-- **Error tracking:** Detect errors quickly and investigate their root causes with the surrounding context.
-- **SLA monitoring:** Track service-level objectives and identify when your application is approaching or exceeding defined thresholds.
-- **Alarms and alerts:** Set up alerts for critical errors, performance degradation, SLA violations, and other anomalies so your team can react quickly.
+Implementar `StepExecutor` (`execute(config, previousOutput)`) y registrarlo en
+`action-registry.ts` — el motor de ejecución (`workflow-engine.service.ts`) no se toca.
 
-## Resources
+## Decisiones fuera de alcance (a propósito)
 
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Auto-instrument your application with [NestJS Observer](https://observer.nestjs.com). Distributed tracing, metrics, and logging made easy. Error tracking and performance monitoring for your NestJS applications.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+Sin autenticación ni multi-tenant (herramienta de un solo usuario para portfolio, no un SaaS); las
+credenciales de servicios externos van por variable de entorno. Sin trigger `webhook` ni action `ai`
+en esta fase — quedan documentados como evolución natural, no implementados a medias.
