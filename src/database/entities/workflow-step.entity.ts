@@ -21,11 +21,13 @@ export class WorkflowStep {
   @Column({ name: 'step_type', type: 'varchar' })
   stepType!: string;
 
-  // 'http_request' | 'notification' — solo 'http_request' tiene executor real en la Fase 1.
+  // 'http_request' | 'notification' | 'ai_task' | 'github' — sumados 'ai_task' y 'github' en la Fase 4.
   @Column({ name: 'action_type', type: 'varchar', nullable: true })
   actionType!: string | null;
 
-  // Payload especifico del tipo: { method, url, headers?, body? } para http_request, { field, operator, value } para condition.
+  // Payload especifico del tipo: { method, url, headers?, body? } para http_request,
+  // { field, operator, value } para condition, { prompt, systemInstruction? } para ai_task,
+  // { repo, githubAction, title?, body?, issueNumber? } para github.
   @Column({ type: 'jsonb' })
   config!: Record<string, unknown>;
 }

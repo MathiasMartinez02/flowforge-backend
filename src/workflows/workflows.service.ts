@@ -4,11 +4,13 @@ import { Repository } from 'typeorm';
 import { Workflow } from '../database/entities/workflow.entity.js';
 import { WorkflowStep } from '../database/entities/workflow-step.entity.js';
 import { SchedulerService } from '../scheduler/scheduler.service.js';
+import { generateSecret } from '../common/crypto.util.js';
 import { CreateWorkflowDto } from './dto/create-workflow.dto.js';
 
 // CRUD de workflows: crea con sus pasos en una transaccion, lista y trae el detalle con pasos ordenados.
 // Modificado en la Fase 3: inyecta SchedulerService para mantener sincronizado el cron de cada
 // workflow con su trigger_type/status (crear un workflow programado y activo lo registra al toque).
+// Modificado en la Fase 4: genera/regenera webhook_secret para triggerType 'webhook'.
 @Injectable()
 export class WorkflowsService {
   constructor(
@@ -17,7 +19,8 @@ export class WorkflowsService {
     private readonly scheduler: SchedulerService,
   ) {}
 
-  // Crea un workflow y sus pasos; valida que 'scheduled' venga con cron_expression.
+  // Crea un workflow y sus pasos; valida que 'scheduled' venga con cron_expression y genera el
+  // secreto de firma cuando el trigger es 'webhook'.
   async create(dto: CreateWorkflowDto): Promise<Workflow> {
     if (dto.triggerType === 'scheduled' && !dto.cronExpression) {
       throw new BadRequestException('cronExpression es requerido cuando triggerType es "scheduled"');
@@ -27,7 +30,8 @@ export class WorkflowsService {
       name: dto.name,
       description: dto.description ?? null,
       triggerType: dto.triggerType,
-      cronExpression: dto.cronExpression ?? null,
+      cronExpression: dto.triggerType === 'scheduled' ? dto.cronExpression ?? null : null,
+      webhookSecret: dto.triggerType === 'webhook' ? generateSecret() : null,
       // actionType es opcional en el DTO desde la Fase 2 (un paso 'condition' no lo lleva) — se normaliza a null explicito.
       steps: dto.steps.map((step) =>
         this.steps.create({
@@ -42,6 +46,18 @@ export class WorkflowsService {
     const saved = await this.workflows.save(workflow);
     this.scheduler.sync(saved);
     return saved;
+  }
+
+  // Regenera el secreto de firma de un workflow 'webhook' (invalida el anterior, ver webhooks.controller.ts).
+  async regenerateWebhookSecret(id: string): Promise<Workflow> {
+    const workflow = await this.workflows.findOne({ where: { id }, relations: { steps: true } });
+    if (!workflow) throw new NotFoundException(`Workflow ${id} no encontrado`);
+    if (workflow.triggerType !== 'webhook') {
+      throw new BadRequestException('Solo un workflow con triggerType "webhook" tiene secreto de firma');
+    }
+    workflow.webhookSecret = generateSecret();
+    const saved = await this.workflows.save(workflow);
+    return this.withOrderedSteps(saved);
   }
 
   // Activa/pausa un workflow y resincroniza su cron (un workflow pausado no dispara mas hasta reactivarse).

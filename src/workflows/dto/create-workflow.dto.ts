@@ -12,7 +12,8 @@ export class CreateWorkflowDto {
   @IsString()
   description?: string;
 
-  @IsIn(['manual', 'scheduled'])
+  // 'webhook' sumado en la Fase 4 — no lleva cronExpression, el disparo es un POST publico firmado.
+  @IsIn(['manual', 'scheduled', 'webhook'])
   triggerType!: string;
 
   @IsOptional()

@@ -29,4 +29,11 @@ export class WorkflowsController {
   updateStatus(@Param('id') id: string, @Body() dto: UpdateWorkflowStatusDto) {
     return this.workflows.updateStatus(id, dto.status);
   }
+
+  // Agregado en la Fase 4: regenera el secreto de firma de un workflow con trigger 'webhook'
+  // (invalida cualquier integracion externa que todavia use el secreto anterior).
+  @Post(':id/webhook-secret/regenerate')
+  regenerateWebhookSecret(@Param('id') id: string) {
+    return this.workflows.regenerateWebhookSecret(id);
+  }
 }

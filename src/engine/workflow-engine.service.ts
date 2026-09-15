@@ -35,7 +35,13 @@ export class WorkflowEngineService {
 
   // Crea el workflow_run y el primer step_run (pending), y encola el primer paso.
   // No espera a que termine: el frontend consulta el estado real con GET /runs/:id (polling).
-  async triggerRun(workflowId: string, triggerSource: string): Promise<WorkflowRun> {
+  // Cambio en la Fase 4: suma "initialOutput" (opcional) — el payload de un trigger 'webhook' se pasa
+  // como previousOutput del primer paso, igual que el output de un paso previo en la cadena normal.
+  async triggerRun(
+    workflowId: string,
+    triggerSource: string,
+    initialOutput: Record<string, unknown> | null = null,
+  ): Promise<WorkflowRun> {
     const workflow = await this.workflows.findOne({ where: { id: workflowId }, relations: { steps: true } });
     if (!workflow) throw new NotFoundException(`Workflow ${workflowId} no encontrado`);
     const steps = [...workflow.steps].sort((a, b) => a.orderIndex - b.orderIndex);
@@ -52,7 +58,7 @@ export class WorkflowEngineService {
     const firstStepRun = await this.stepRuns.save(
       this.stepRuns.create({ workflowRun: run, workflowStep: steps[0], status: 'pending' }),
     );
-    await this.producer.enqueueStep(firstStepRun.id, null);
+    await this.producer.enqueueStep(firstStepRun.id, initialOutput);
 
     return this.findRun(run.id);
   }

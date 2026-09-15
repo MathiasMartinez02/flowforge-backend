@@ -15,12 +15,18 @@ export class Workflow {
   @Column({ type: 'text', nullable: true })
   description!: string | null;
 
-  // 'manual' | 'scheduled' — sin enum nativo de Postgres a propósito, para no depender de ALTER TYPE cuando se sume 'webhook' en la Fase 4.
+  // 'manual' | 'scheduled' | 'webhook' — sin enum nativo de Postgres a propósito (ver Fase 3/4).
   @Column({ name: 'trigger_type', type: 'varchar' })
   triggerType!: string;
 
   @Column({ name: 'cron_expression', type: 'varchar', nullable: true })
   cronExpression!: string | null;
+
+  // Solo si trigger_type = 'webhook': firma HMAC-SHA256 del payload (ver crypto.util.ts). Se genera
+  // al crear el workflow y se puede regenerar. Plaintext en DB, mismo criterio que el resto del
+  // proyecto (herramienta de un solo usuario, sin multi-tenant) — no es un secreto de terceros.
+  @Column({ name: 'webhook_secret', type: 'varchar', nullable: true })
+  webhookSecret!: string | null;
 
   // 'draft' | 'active' | 'paused'
   @Column({ type: 'varchar', default: 'active' })
